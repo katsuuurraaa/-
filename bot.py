@@ -1986,6 +1986,93 @@ async def transfer_get_amount(msg: Message, state: FSMContext):
     except Exception:
         await msg.answer("Ошибка! Введи корректное число монет.")
 
+CHARACTERS_FILE = "characters_week.json"
+USERS_FILE = "users_voted.json"
+
+def load_json(path, default):
+    if not os.path.exists(path):
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(default, f, ensure_ascii=False, indent=2)
+        return default
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_json(path, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def vote(user_id, msg):
+    data = load_json(CHARACTERS_FILE, {})
+    if not data.get("characters"):
+        return "Список персонажей недели ещё не выбран."
+    users = load_json(USERS_FILE, {})
+    if str(user_id) in users:
+        return "Вы уже голосовали на этой неделе!"
+    name = msg.strip().lower()
+    found = None
+    for char in data["characters"]:
+        if char["name"].lower() == name:
+            found = char
+            break
+    if not found:
+        return "Такого персонажа нет среди номинантов недели."
+    found["votes"] += 1
+    users[str(user_id)] = found["name"]
+    save_json(CHARACTERS_FILE, data)
+    save_json(USERS_FILE, users)
+    return f"Ваш голос за {found['name']} ({found['anime']}) засчитан!"
+
+def show_characters():
+    data = load_json(CHARACTERS_FILE, {})
+    if not data.get("characters"):
+        return "Список персонажей недели ещё не выбран."
+    res = ["Аниме персонажи недели:"]
+    for char in data["characters"]:
+        res.append(f"{char['name']} ({char['anime']}) — голосов: {char['votes']}")
+    return "\n".join(res)
+
+def show_winner():
+    data = load_json(CHARACTERS_FILE, {})
+    if not data.get("characters"):
+        return "Список персонажей недели ещё не выбран."
+    chars = sorted(data["characters"], key=lambda c: c["votes"], reverse=True)
+    res = ["Победитель недели:"]
+    res.append(f"{chars[0]['name']} ({chars[0]['anime']}) — {chars[0]['votes']} голосов")
+    res.append("\nТоп-5 недели:")
+    for ch in chars:
+        res.append(f"{ch['name']} ({ch['anime']}) — {ch['votes']} голосов")
+    return "\n".join(res)
+
+def new_week():
+    save_json(USERS_FILE, {})  # Сброс голосов
+    return "Голоса сброшены! Список персонажей остался прежним. Чтобы обновить персонажей, измени файл characters_week.json."
+
+# Пример интеграции:
+def handle_message(user_id, text):
+    text = text.strip()
+    if text.startswith("голосовать "):
+        name = text[len("голосовать "):]
+        return vote(user_id, name)
+    elif text == "персонажи":
+        return show_characters()
+    elif text == "победитель":
+        return show_winner()
+    elif text == "новая неделя":
+        return new_week()
+    else:
+        return "Неизвестная команда. Доступные команды: персонажи, голосовать [имя], победитель, новая неделя."
+
+# Для теста из консоли:
+if __name__ == "__main__":
+    print("Бот запущен. Вводи команды (пример: персонажи, голосовать Микаса Аккерман, победитель, новая неделя)")
+    while True:
+        try:
+            user_id = input("Введи свой user_id (число или имя): ")
+            msg = input("Введи команду: ")
+            print(handle_message(user_id, msg))
+        except KeyboardInterrupt:
+            print("\nВыход.")
+            break
 
 
 # АНТИФЛУД — ОСТАВЛЯЕМ ТОЛЬКО ЭТОТ ГЛОБАЛЬНЫЙ ХЕНДЛЕР!
