@@ -797,32 +797,36 @@ async def daily_bonus(msg: Message):
     await msg.answer(f"🎁 Ты получил <b>{bonus} Парадизкоинов</b>!", parse_mode=ParseMode.HTML)
 
 
-router = Router()  # <--- ЭТО ОБЯЗАТЕЛЬНО
+router = Router()
 
+class PromoStates(StatesGroup):
+    waiting_for_code = State()
 
-@router.message(F.text.lower() == "промокод")
+PROMOCODES = {"test2024": 100}
+
+@router.message(lambda m: m.text and m.text.lower() == "промокод")
 async def promo_enter(msg: Message, state: FSMContext):
     await state.set_state(PromoStates.waiting_for_code)
     await msg.answer("Введи промокод:")
 
-# Хэндлер для проверки промокода, когда пользователь вводит код
 @router.message(PromoStates.waiting_for_code)
 async def promo_code_process(msg: Message, state: FSMContext):
-    promo_code = msg.text.strip()
-    # Здесь должна быть ваша логика проверки промокода
-    if check_promo_code(promo_code):  # реализуйте функцию проверки промокода
-        await msg.answer("Промокод активирован!")
-        # начисление бонуса и т.п.
+    promo_code = msg.text.strip().lower()
+    if promo_code in PROMOCODES:
+        await msg.answer(f"Промокод активирован! +{PROMOCODES[promo_code]} коинов")
         await state.clear()
     else:
         await msg.answer("Промокод недействителен. Попробуй ещё раз.")
-        # Оставляем пользователя в этом же состоянии
 
-# Пример функции проверки (реализуйте свою логику)
-def check_promo_code(code: str) -> bool:
-    # Например, разрешён только один промокод
-    return code.lower() == "test2024"
 
+    # Начисляем бонус
+    bonus = PROMOCODES[promo_code]
+    user["coins"] += bonus
+    user.setdefault("activated_promos", []).append(promo_code)
+    update_user(user_id, user)
+
+    await msg.answer(f"Промокод активирован! Тебе начислено {bonus} коинов.")
+    await state.clear()
     
 @dp.message(lambda m: m.text and m.text.lower() == "админ")
 async def admin_panel_entry(msg: Message):
@@ -863,26 +867,6 @@ async def remove_inline_markup(msg: types.Message):
         await msg.answer("Инлайн-кнопки удалены у последнего сообщения.")
     except Exception as e:
         await msg.answer("Не удалось удалить кнопки. Возможно, сообщение слишком старое или кнопок нет.")
-
-class ShopStates(StatesGroup):
-    buying = State()
-
-@dp.message(lambda m: m.text and m.text.lower() == "магазин")
-async def shop_menu(msg: Message, state: FSMContext):
-    text = (
-        "<b>🛒 Магазин</b>\n\n"
-        "1. Телефоны\n"
-        "2. Машины\n"
-        "3. Ноутбуки\n"
-        "4. 18+ (алкоголь, сигары)\n"
-        "\nДля покупки напиши: <i>номер цвет</i> (например: 1 черный)\n"
-        "Для выбора категории напиши её имя (телефоны, машины, ноутбуки, 18+).\n"
-        "Для выхода из магазина напиши: выход"
-    )
-    await msg.answer(text, parse_mode="HTML")
-    await state.set_state(ShopStates.buying)
-
-
 
 phones = [
         {"name": "Nokia 105", "price": 500, "colors": ["Черный", "Синий", "Красный", "Зеленый", "Белый"]},
@@ -926,58 +910,71 @@ adult_items = [
     {"name": "Шампанское Moet", "price": 7000, "colors": ["Золотой"], "adult": True},
     {"name": "Стринги", "price": 2000, "colors": ["Красный, Черный, Белый"], "adult": True},
     {"name": "Поношенные стринги", "price": 5000, "colors": ["Красный, Черный, Белый"], "adult": True},
-    {"name": "Дилдо", "price": 150000, "size": ["10 см, 15 см, 20 см, 25 см"], "adult": True}
+    {"name": "Дилдо", "price": 150000, "colors": ["10 см, 15 см, 20 см, 25 см"], "adult": True}
 
 ]
 
+category_map = [
+    ("📱 Телефоны", phones),
+    ("🚗 Машины", cars),
+    ("💻 Ноутбуки", laptops),
+    ("🔞 18+", adult_items),
+]
+
+def get_all_items():
+    all_items = []
+    for _, items in category_map:
+        all_items.extend(items)
+    return all_items
+
+
+
+from aiogram.fsm.state import State, StatesGroup
+class ShopStates(StatesGroup):
+    buying = State()
+
+@dp.message(lambda m: m.text and m.text.lower() == "магазин")
+async def shop_menu(msg: types.Message, state: FSMContext):
+    text = "<b>🛒 Магазин</b>\n\n"
+    for idx, (cat_name, _) in enumerate(category_map, 1):
+        text += f"{cat_name} — напиши \"{cat_name.split(' ',1)[1].lower()}\"\n"
+    text += '\nДля покупки напиши: <i>номер цвет</i> (например: 1 черный)\nДля выхода: "выход"\n'
+    await msg.answer(text, parse_mode="HTML")
+    await state.set_state(ShopStates.buying)
 
 @dp.message(ShopStates.buying)
-async def shop_categories(msg: Message, state: FSMContext):
-    if msg.text.lower() == "выход":
+async def shop_handler(msg: types.Message, state: FSMContext):
+    text = msg.text.strip().lower()
+    if text == "выход":
         await msg.answer("Вы вышли из магазина.")
         await state.clear()
         return
 
-    parts = msg.text.strip().split()
-    if len(parts) < 2 or not parts[0].isdigit():
-        await msg.answer("Формат: номер цвет. Пример: 1 Черный\nИли напиши 'выход' для выхода из магазина.")
+    # Категории
+    if text in ["телефоны", "машины", "ноутбуки", "18+"]:
+        idx = ["телефоны", "машины", "ноутбуки", "18+"].index(text)
+        cat_name, items = category_map[idx]
+        out = f"<b>{cat_name}:</b>\n"
+        for i, item in enumerate(items, 1):
+            out += f"{i}. {item['name']} — {item['price']} коинов (цвета: {', '.join(item['colors'])})\n"
+        out += "\nДля покупки: <i>номер цвет</i> (например: 1 черный)\nДля выхода: \"выход\""
+        await msg.answer(out, parse_mode="HTML")
         return
 
-@dp.message(lambda m: m.text and m.text.lower() == "18+")
-async def show_adult_shop(msg: Message):
-    text = "<b>18+ Магазин:</b>\n"
-    for idx, item in enumerate(adult_items, 1):
-        text += f"{idx}. {item['name']} — {item['price']} коинов\n"
-    text += "\nДля покупки: номер цвет (например: 1 коричневый)\nДля выхода: выход"
-    await msg.answer(text, parse_mode="HTML")
-
+    # Покупка по номеру и цвету
+    parts = msg.text.strip().split()
+    if len(parts) < 2 or not parts[0].isdigit():
+        await msg.answer("Формат: номер цвет. Пример: 1 черный\nИли напиши 'выход' для выхода из магазина.")
+        return
 
     number = int(parts[0])
     color = " ".join(parts[1:]).capitalize()
-
-    all_items = []
-    item_types = []
-    for item in phones:
-        all_items.append(item)
-        item_types.append("phone")
-    for item in cars:
-        all_items.append(item)
-        item_types.append("car")
-    for item in laptops:
-        all_items.append(item)
-        item_types.append("notebook")
-    for item in adult_items:
-        all_items.append(item)
-        item_types.append("adult")
-
-    if 1 <= number <= len(all_items):
-        item = all_items[number - 1]
-        item_type = item_types[number - 1]
-    else:
+    all_items = get_all_items()
+    if not (1 <= number <= len(all_items)):
         await msg.answer("Нет товара с таким номером.")
         return
 
-
+    item = all_items[number - 1]
     if color not in item["colors"]:
         await msg.answer(f"Нет такого цвета. Доступные: {', '.join(item['colors'])}")
         return
@@ -988,44 +985,20 @@ async def show_adult_shop(msg: Message):
         return
 
     user["coins"] -= item["price"]
-    if item_type == "phone":
+    # Сохраняем покупку в профиль пользователя по типу товара
+    if item in phones:
         user["phone"] = f"{item['name']} ({color})"
-    elif item_type == "car":
+    elif item in cars:
         user["car"] = f"{item['name']} ({color})"
-    elif item_type == "notebook":
+    elif item in laptops:
         user["notebook"] = f"{item['name']} ({color})"
-    elif item_type == "adult":
-        # Можно добавить отдельную логику хранения алкоголя/сигар
+    elif item in adult_items:
         user.setdefault("adult_items", []).append(f"{item['name']} ({color})")
     update_user(msg.from_user.id, user)
-    await msg.answer(f"Покупка успешна!\nТы купил {item['name']} цвета {color} за {item['price']} коинов.\nТеперь у тебя: {user['coins']} коинов.")
-    await state.clear()  # После покупки сбрасываем состояние
+    await msg.answer(f"Покупка успешна!\nТы купил {item['name']} цвета {color} за {item['price']} коинов.\nОсталось: {user['coins']} коинов.")
+    await state.clear()
 
-from aiogram import types
 
-@dp.message(lambda m: m.text and m.text.lower() == "телефоны")
-async def shop_phones(msg: types.Message):
-    text = "<b>📱 Телефоны:</b>\n"
-    for idx, p in enumerate(phones, 1):
-        text += f"{idx}. {p['name']} — {p['price']} коинов\n"
-    text += "\nДля покупки: напиши <i>номер цвет</i> (например: 2 черный)"
-    await msg.answer(text, parse_mode="HTML")
-
-@dp.message(lambda m: m.text and m.text.lower() == "машины")
-async def shop_cars(msg: types.Message):
-    text = "<b>🚗 Машины:</b>\n"
-    for idx, c in enumerate(cars, 1):
-        text += f"{idx}. {c['name']} — {c['price']} коинов\n"
-    text += "\nДля покупки: напиши <i>номер цвет</i> (например: 1 синий)"
-    await msg.answer(text, parse_mode="HTML")
-
-@dp.message(lambda m: m.text and m.text.lower() == "ноутбуки")
-async def shop_laptops(msg: types.Message):
-    text = "<b>💻 Ноутбуки:</b>\n"
-    for idx, l in enumerate(laptops, 1):
-        text += f"{idx}. {l['name']} — {l['price']} коинов\n"
-    text += "\nДля покупки: напиши <i>номер цвет</i> (например: 3 серый)"
-    await msg.answer(text, parse_mode="HTML")
 
 class MafiaStates(StatesGroup):
     wait_for_players = State()
@@ -1588,6 +1561,15 @@ async def divorce(msg: Message):
     update_user(msg.from_user.id, user)
     await msg.answer("Вы развелись.")
 
+
+from aiogram.fsm.state import State, StatesGroup
+
+class PromoStates(StatesGroup):
+    promo_code_step1 = State()
+    promo_code_step2 = State()
+    promo_code_step3 = State()
+
+
 @dp.message(lambda m: m.text and m.text.lower() == "создать промокод")
 async def create_promo_start(msg: Message, state: FSMContext):
     if not is_admin(msg.from_user.id):
@@ -1815,15 +1797,29 @@ async def weather(msg: types.Message):
 
 # Инвентарь
 @dp.message(lambda m: m.text and m.text.lower() == "инвентарь")
-async def inventory(msg: types.Message):
+async def show_inventory(msg: Message):
     user = get_user(msg.from_user.id)
-    inventory = user.get("inventory", {})
-    if not inventory:
-        await msg.answer("Твой инвентарь пуст.")
-        return
-    text = "<b>Твой инвентарь:</b>\n"
-    for k, v in inventory.items():
-        text += f"{k}: {v}\n"
+    text = "<b>🎒 Твой инвентарь:</b>\n"
+
+    # Обычные предметы
+    if user.get("phone"):
+        text += f"• Телефон: {user['phone']}\n"
+    if user.get("car"):
+        text += f"• Машина: {user['car']}\n"
+    if user.get("notebook"):
+        text += f"• Ноутбук: {user['notebook']}\n"
+    if user.get("adult_items"):
+        text += "• 18+: " + ", ".join(user["adult_items"]) + "\n"
+
+    # NFT подарки — отдельным блоком, даже если пусто
+    nft = user.get("nft_items", [])
+    text += "\n<b>🎁 NFT-подарки:</b>\n"
+    if nft:
+        for n in nft:
+            text += f"• {n}\n"
+    else:
+        text += "Нет\n"
+
     await msg.answer(text, parse_mode="HTML")
 
 # Курс валют (игровой и реальный курс доллара)
@@ -1967,47 +1963,59 @@ NFT_ITEMS = [
     {"name": "Золотая чаша", "desc": "Роскошь!"},
 ]
 
-
+NFT_PRICE = 100000  # фиксированная цена
 
 def get_nft_items():
     return NFT_ITEMS
 
+from aiogram.fsm.state import State, StatesGroup
+class ShopStates(StatesGroup):
+    buying = State()
+    nft_buying = State()
 
 @dp.message(lambda m: m.text and m.text.lower() == "нфт магазин")
 async def nft_shop_menu(msg: Message, state: FSMContext):
     text = "<b>🎁 NFT-магазин</b>\n\n"
     for idx, item in enumerate(get_nft_items(), 1):
-        text += f"{idx}. {item['name']} — {item['desc']}\n"
-    text += "\nДля покупки: нфт купить номер"
+        text += f"{idx}. {item['name']} — {item['desc']}. Цена: {NFT_PRICE} коинов\n"
+    text += "\nДля покупки: нфт купить номер\nДля выхода: нфт выход"
     await msg.answer(text, parse_mode="HTML")
-    await state.set_state(ShopStates.buying)  # Можно сделать отдельное состояние
+    await state.set_state(ShopStates.nft_buying)
 
-@dp.message(lambda m: m.text and m.text.lower().startswith("нфт купить"))
+@dp.message(ShopStates.nft_buying)
 async def nft_shop_buy(msg: Message, state: FSMContext):
-    parts = msg.text.strip().split()
-    if len(parts) < 3 or not parts[2].isdigit():
-        await msg.answer("Формат: нфт купить номер")
+    txt = msg.text.strip().lower()
+    if txt == "нфт выход":
+        await msg.answer("Вы вышли из NFT-магазина.")
+        await state.clear()
         return
-    idx = int(parts[2]) - 1
-    nft_items = get_nft_items()
-    if not (0 <= idx < len(nft_items)):
-        await msg.answer("Нет такого NFT.")
-        return
-    user = get_user(msg.from_user.id)
-    item = nft_items[idx]
-    if item["name"] in user.get("nft_items", []):
-        await msg.answer("Этот NFT уже у тебя есть!")
-        return
-    price = 100000  # Например, цена для каждого
-    if user["coins"] < price:
-        await msg.answer("Недостаточно коинов для покупки.")
-        return
-    user["coins"] -= price
-    user.setdefault("nft_items", []).append(item["name"])
-    update_user(msg.from_user.id, user)
-    await msg.answer(f"Поздравляем! Ты купил NFT: {item['name']} за {price} коинов.")
-    await state.clear()
 
+    if txt.startswith("нфт купить"):
+        parts = txt.split()
+        if len(parts) < 3 or not parts[2].isdigit():
+            await msg.answer("Формат: нфт купить номер")
+            return
+        idx = int(parts[2]) - 1
+        nft_items = get_nft_items()
+        if not (0 <= idx < len(nft_items)):
+            await msg.answer("Нет такого NFT.")
+            return
+        user = get_user(msg.from_user.id)
+        nft_name = nft_items[idx]["name"]
+        if nft_name in user.get("nft_items", []):
+            await msg.answer("Этот NFT уже у тебя есть!")
+            return
+        if user["coins"] < NFT_PRICE:
+            await msg.answer("Недостаточно коинов для покупки.")
+            return
+        user["coins"] -= NFT_PRICE
+        user.setdefault("nft_items", []).append(nft_name)
+        update_user(msg.from_user.id, user)
+        await msg.answer(f"Поздравляем! Ты купил NFT: {nft_name} за {NFT_PRICE} коинов.")
+        await state.clear()
+        return
+
+    await msg.answer("Для покупки: нфт купить номер\nДля выхода: нфт выход")
 
 
 # АНТИФЛУД — ОСТАВЛЯЕМ ТОЛЬКО ЭТОТ ГЛОБАЛЬНЫЙ ХЕНДЛЕР!
