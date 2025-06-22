@@ -873,8 +873,9 @@ async def shop_menu(msg: Message, state: FSMContext):
         "1. Телефоны\n"
         "2. Машины\n"
         "3. Ноутбуки\n"
+        "4. 18+ (алкоголь, сигары)\n"
         "\nДля покупки напиши: <i>номер цвет</i> (например: 1 черный)\n"
-        "Для выбора категории напиши её имя.\n"
+        "Для выбора категории напиши её имя (телефоны, машины, ноутбуки, 18+).\n"
         "Для выхода из магазина напиши: выход"
     )
     await msg.answer(text, parse_mode="HTML")
@@ -918,6 +919,16 @@ laptops = [
         {"name": "ASUS ROG Strix", "price": 170000, "colors": ["Черный", "Серый", "Синий", "Красный", "Белый"]},
         {"name": "Apple MacBook Pro 16", "price": 350000, "colors": ["Черный", "Серый", "Синий", "Красный", "Белый"]}
 ]
+adult_items = [
+    {"name": "Виски Jack Daniels", "price": 5000, "colors": ["Коричневый"], "adult": True},
+    {"name": "Сигары Cohiba", "price": 3000, "colors": ["Коричневый"], "adult": True},
+    {"name": "Шампанское Moet", "price": 7000, "colors": ["Золотой"], "adult": True},
+    {"name": "Стринги", "price": 2000, "colors": ["Красный, Черный, Белый"], "adult": True},
+    {"name": "Поношенные стринги", "price": 5000, "colors": ["Красный, Черный, Белый"], "adult": True},
+    {"name": "Дилдо", "price": 150000, "size": ["10 см, 15 см, 20 см, 25 см"], "adult": True}
+
+]
+
 
 @dp.message(ShopStates.buying)
 async def shop_buy(msg: Message, state: FSMContext):
@@ -932,10 +943,10 @@ async def shop_buy(msg: Message, state: FSMContext):
         await msg.answer("Формат: номер цвет. Пример: 1 Черный\nИли напиши 'выход' для выхода из магазина.")
         return
 
+    
     number = int(parts[0])
     color = " ".join(parts[1:]).capitalize()
 
-    # Собираем все товары в список
     all_items = []
     item_types = []
     for item in phones:
@@ -947,6 +958,9 @@ async def shop_buy(msg: Message, state: FSMContext):
     for item in laptops:
         all_items.append(item)
         item_types.append("notebook")
+    for item in adult_items:
+        all_items.append(item)
+        item_types.append("adult")
 
     if 1 <= number <= len(all_items):
         item = all_items[number - 1]
@@ -954,6 +968,13 @@ async def shop_buy(msg: Message, state: FSMContext):
     else:
         await msg.answer("Нет товара с таким номером.")
         return
+
+    # Проверка 18+
+    if item_type == "adult":
+        user = get_user(msg.from_user.id)
+        if not user.get("is_adult"):
+            await msg.answer("Этот товар только для пользователей 18+. Напиши 'я взрослый' для подтверждения возраста.")
+            return
 
     if color not in item["colors"]:
         await msg.answer(f"Нет такого цвета. Доступные: {', '.join(item['colors'])}")
@@ -971,11 +992,11 @@ async def shop_buy(msg: Message, state: FSMContext):
         user["car"] = f"{item['name']} ({color})"
     elif item_type == "notebook":
         user["notebook"] = f"{item['name']} ({color})"
+    elif item_type == "adult":
+        # Можно добавить отдельную логику хранения алкоголя/сигар
+        user.setdefault("adult_items", []).append(f"{item['name']} ({color})")
     update_user(msg.from_user.id, user)
-    await msg.answer(
-        f"Покупка успешна!\nТы купил {item['name']} цвета {color} за {item['price']} коинов.\n"
-        f"Теперь у тебя: {user['coins']} коинов."
-    )
+    await msg.answer(f"Покупка успешна!\nТы купил {item['name']} цвета {color} за {item['price']} коинов.\nТеперь у тебя: {user['coins']} коинов.")
     await state.clear()  # После покупки сбрасываем состояние
 
 from aiogram import types
@@ -1903,14 +1924,14 @@ async def market_menu(msg: Message):
         if "desc" in item:
             text += f" ({item['desc']})"
         text += "\n"
-    text += "\nДля покупки: рынок купить <номер>"
+    text += "\nДля покупки: рынок купить номер"
     await msg.answer(text, parse_mode="HTML")
 
 @dp.message(lambda m: m.text and m.text.lower().startswith("рынок купить"))
 async def market_buy(msg: Message):
     parts = msg.text.strip().split()
     if len(parts) < 3 or not parts[2].isdigit():
-        await msg.answer("Формат: рынок купить <номер>")
+        await msg.answer("Формат: рынок купить номер")
         return
     idx = int(parts[2]) - 1
     items = get_market_items()
@@ -1938,6 +1959,75 @@ async def market_buy(msg: Message):
     update_user(msg.from_user.id, user)
     await msg.answer(f"Покупка успешна! Ты купил {item['name']}. Осталось: {user['coins']} коинов.")
 
+NFT_ITEMS = [
+    {"name": "Алмаз Дурова", "desc": "Легендарный NFT!"},
+    {"name": "Трусы Дурова", "desc": "Эксклюзив!"},
+    {"name": "Золотая чаша", "desc": "Роскошь!"},
+]
+
+
+
+def get_nft_items():
+    return NFT_ITEMS
+
+
+@dp.message(lambda m: m.text and m.text.lower() == "нфт магазин")
+async def nft_shop_menu(msg: Message, state: FSMContext):
+    text = "<b>🎁 NFT-магазин</b>\n\n"
+    for idx, item in enumerate(get_nft_items(), 1):
+        text += f"{idx}. {item['name']} — {item['desc']}\n"
+    text += "\nДля покупки: нфт купить номер"
+    await msg.answer(text, parse_mode="HTML")
+    await state.set_state(ShopStates.buying)  # Можно сделать отдельное состояние
+
+@dp.message(lambda m: m.text and m.text.lower().startswith("нфт купить"))
+async def nft_shop_buy(msg: Message, state: FSMContext):
+    parts = msg.text.strip().split()
+    if len(parts) < 3 or not parts[2].isdigit():
+        await msg.answer("Формат: нфт купить номер")
+        return
+    idx = int(parts[2]) - 1
+    nft_items = get_nft_items()
+    if not (0 <= idx < len(nft_items)):
+        await msg.answer("Нет такого NFT.")
+        return
+    user = get_user(msg.from_user.id)
+    item = nft_items[idx]
+    if item["name"] in user.get("nft_items", []):
+        await msg.answer("Этот NFT уже у тебя есть!")
+        return
+    price = 100000  # Например, цена для каждого
+    if user["coins"] < price:
+        await msg.answer("Недостаточно коинов для покупки.")
+        return
+    user["coins"] -= price
+    user.setdefault("nft_items", []).append(item["name"])
+    update_user(msg.from_user.id, user)
+    await msg.answer(f"Поздравляем! Ты купил NFT: {item['name']} за {price} коинов.")
+    await state.clear()
+
+@dp.message(lambda m: m.text and "18+" in m.text)
+async def confirm_adult(msg: Message):
+    await msg.answer("Ты точно старше 18? Напиши 'Да' если так.")
+
+@dp.message(lambda m: m.text and m.text.lower() == "да")
+async def set_adult(msg: Message):
+    user = get_user(msg.from_user.id)
+    user["is_adult"] = True
+    update_user(msg.from_user.id, user)
+    await msg.answer("Доступ к 18+ магазинам теперь открыт!")
+
+@dp.message(lambda m: m.text and m.text.lower() == "я взрослый")
+async def set_adult(msg: Message):
+    user = get_user(msg.from_user.id)
+    user["is_adult"] = True
+    update_user(msg.from_user.id, user)
+    await msg.answer("Доступ к 18+ товарам теперь открыт!")
+
+    if user.get("adult_items"):
+        text += "\n<b>🍷 18+ предметы:</b>\n"
+    for a in user["adult_items"]:
+        text += f"- {a}\n"
 
 # АНТИФЛУД — ОСТАВЛЯЕМ ТОЛЬКО ЭТОТ ГЛОБАЛЬНЫЙ ХЕНДЛЕР!
 @dp.message()
