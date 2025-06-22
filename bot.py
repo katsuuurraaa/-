@@ -218,6 +218,54 @@ def remove_moderator(user_id):
     db["moderators"] = list(moderators)
     save_db(db)
 
+
+import time
+
+BANK_PERCENT = 0.10      # 10%
+BANK_PERIOD = 3 * 24 * 60 * 60  # 3 дня в секундах
+
+def get_bank(user_id):
+    user = get_user(user_id)
+    # Если первый раз — инициализируем банк
+    if "bank_balance" not in user:
+        user["bank_balance"] = 0
+        user["bank_updated"] = int(time.time())
+        update_user(user_id, user)
+    # Автоматически начисляем проценты
+    now = int(time.time())
+    last = user.get("bank_updated", 0)
+    balance = user.get("bank_balance", 0)
+    while now >= last + BANK_PERIOD and balance > 0:
+        balance = int(balance * (1 + BANK_PERCENT))
+        last += BANK_PERIOD
+    if balance != user.get("bank_balance", 0) or last != user.get("bank_updated", 0):
+        user["bank_balance"] = balance
+        user["bank_updated"] = last
+        update_user(user_id, user)
+    return balance, last
+
+def deposit(user_id, amount):
+    user = get_user(user_id)
+    if user["coins"] < amount:
+        return False, "Недостаточно коинов для депозита."
+    user["coins"] -= amount
+    balance, _ = get_bank(user_id)  # начислим проценты прежде чем пополнить
+    user["bank_balance"] = balance + amount
+    user["bank_updated"] = int(time.time())
+    update_user(user_id, user)
+    return True, f"На банковский счёт положено {amount} коинов. Текущий баланс банка: {user['bank_balance']}."
+
+def withdraw(user_id, amount):
+    balance, _ = get_bank(user_id)
+    if amount > balance:
+        return False, "Недостаточно средств в банке."
+    user = get_user(user_id)
+    user["bank_balance"] = balance - amount
+    user["coins"] += amount
+    user["bank_updated"] = int(time.time())
+    update_user(user_id, user)
+    return True, f"С банковского счёта снято {amount} коинов. Остаток в банке: {user['bank_balance']}."
+
 def create_promo(code, reward_type, value):
     db = load_db()
     if "promo_codes" not in db:
@@ -362,7 +410,6 @@ async def profile(msg: Message):
         f"💻 Ноутбук: <b>{user['notebook']}</b>\n"
         f"💼 Работа: <b>{user.get('job','Безработный')}</b>\n"
         f"💍 Партнёр: <b>{get_partner_name(user)}</b>\n"
-        f"🔒 Бан: <b>{ban_str}</b>\n"
         f"🤐 Мут: <b>{mute_str}</b>\n"
         f"🛡️ Модератор: <b>{mod_status}</b>"
     )
@@ -1607,35 +1654,12 @@ async def moder_help(msg: Message):
     await msg.answer(
         "мут user_id мин причина — выдать мут\n"
         "размут user_id — снять мут\n"
-        "бан user_id [мин] причина — бан\n"
-        "разбан user_id — снять бан\n"
+
         "кик user_id — кикнуть\n"
         "модеры — список модеров\n"
         "роль — узнать свою роль"
     )
 
-# БАН
-@dp.message(lambda m: m.text and m.text.startswith("бан"))
-async def ban_user(msg: Message):
-    if not (is_admin(msg.from_user.id) or is_moderator(msg.from_user.id)):
-        return
-    try:
-        args = msg.text.split()
-        user_id = int(args[1])
-        ban_until = 0
-        reason = " ".join(args[2:]) or "Без причины"
-        if len(args) > 2 and args[2].isdigit():
-            mins = int(args[2])
-            ban_until = int(time.time()) + mins*60
-            reason = " ".join(args[3:]) or "Без причины"
-        user = get_user(user_id)
-        user["banned"] = True
-        user["ban_until"] = ban_until
-        user["ban_reason"] = reason
-        update_user(user_id, user)
-        await msg.answer(f"Пользователь {user_id} забанен. {'Навсегда' if ban_until==0 else f'На {mins} мин.'} Причина: {reason}")
-    except:
-        await msg.answer("Использование: бан user_id [минуты] причина")
 
 @dp.message(lambda m: m.text and m.text.lower().startswith("ник "))
 async def set_nick(msg: Message):
@@ -1648,22 +1672,6 @@ async def set_nick(msg: Message):
     user["nick"] = nick
     update_user(msg.from_user.id, user)
     await msg.answer(f"Твой ник теперь: <b>{nick}</b>", parse_mode="HTML")
-
-@dp.message(lambda m: m.text and m.text.startswith("разбан"))
-async def unban_user(msg: Message):
-    if not (is_admin(msg.from_user.id) or is_moderator(msg.from_user.id)):
-        return
-    try:
-        args = msg.text.split()
-        user_id = int(args[1])
-        user = get_user(user_id)
-        user["banned"] = False
-        user["ban_until"] = 0
-        user["ban_reason"] = ""
-        update_user(user_id, user)
-        await msg.answer(f"Пользователь {user_id} разбанен.")
-    except:
-        await msg.answer("Использование: разбан user_id")
 
 # КИК (из группы)
 @dp.message(lambda m: m.text and m.text.startswith("кик"))
@@ -1986,93 +1994,69 @@ async def transfer_get_amount(msg: Message, state: FSMContext):
     except Exception:
         await msg.answer("Ошибка! Введи корректное число монет.")
 
-CHARACTERS_FILE = "characters_week.json"
-USERS_FILE = "users_voted.json"
+from aiogram import Bot, Dispatcher
+import asyncio
+from anime_vote_handlers import router
 
-def load_json(path, default):
-    if not os.path.exists(path):
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(default, f, ensure_ascii=False, indent=2)
-        return default
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
 
-def save_json(path, data):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+from datetime import datetime, timedelta, UTC
 
-def vote(user_id, msg):
-    data = load_json(CHARACTERS_FILE, {})
-    if not data.get("characters"):
-        return "Список персонажей недели ещё не выбран."
-    users = load_json(USERS_FILE, {})
-    if str(user_id) in users:
-        return "Вы уже голосовали на этой неделе!"
-    name = msg.strip().lower()
-    found = None
-    for char in data["characters"]:
-        if char["name"].lower() == name:
-            found = char
-            break
-    if not found:
-        return "Такого персонажа нет среди номинантов недели."
-    found["votes"] += 1
-    users[str(user_id)] = found["name"]
-    save_json(CHARACTERS_FILE, data)
-    save_json(USERS_FILE, users)
-    return f"Ваш голос за {found['name']} ({found['anime']}) засчитан!"
+PROMO_PARADISE_REWARD = 100_000
 
-def show_characters():
-    data = load_json(CHARACTERS_FILE, {})
-    if not data.get("characters"):
-        return "Список персонажей недели ещё не выбран."
-    res = ["Аниме персонажи недели:"]
-    for char in data["characters"]:
-        res.append(f"{char['name']} ({char['anime']}) — голосов: {char['votes']}")
-    return "\n".join(res)
+@dp.message(lambda m: m.text and m.text.lower() == "промокод paradise")
+async def promo_paradise(msg: types.Message):
+    user = get_user(msg.from_user.id)
+    now = datetime.now(UTC)
+    last = user.get("promo_paradise_last", 0)
+    if last:
+        last_dt = datetime.fromtimestamp(last, UTC)
+        if (now - last_dt) < timedelta(days=7):
+            left = timedelta(days=7) - (now - last_dt)
+            d, h, m = left.days, left.seconds//3600, (left.seconds//60)%60
+            txt = []
+            if d: txt.append(f"{d}д")
+            if h: txt.append(f"{h}ч")
+            if m: txt.append(f"{m}м")
+            await msg.answer(f"Этот промокод можно активировать раз в неделю.\nОсталось ждать: {' '.join(txt) or 'несколько минут'}")
+            return
+    user["coins"] += PROMO_PARADISE_REWARD
+    user["promo_paradise_last"] = int(now.timestamp())
+    update_user(msg.from_user.id, user)
+    await msg.answer(f"🎉 Ты активировал промокод PARADISE и получил {PROMO_PARADISE_REWARD:,} коинов!\nДо следующей активации — неделя.")
 
-def show_winner():
-    data = load_json(CHARACTERS_FILE, {})
-    if not data.get("characters"):
-        return "Список персонажей недели ещё не выбран."
-    chars = sorted(data["characters"], key=lambda c: c["votes"], reverse=True)
-    res = ["Победитель недели:"]
-    res.append(f"{chars[0]['name']} ({chars[0]['anime']}) — {chars[0]['votes']} голосов")
-    res.append("\nТоп-5 недели:")
-    for ch in chars:
-        res.append(f"{ch['name']} ({ch['anime']}) — {ch['votes']} голосов")
-    return "\n".join(res)
 
-def new_week():
-    save_json(USERS_FILE, {})  # Сброс голосов
-    return "Голоса сброшены! Список персонажей остался прежним. Чтобы обновить персонажей, измени файл characters_week.json."
+@dp.message(lambda m: m.text and m.text.lower() == "банк")
+async def bank_status(msg: types.Message):
+    balance, last = get_bank(msg.from_user.id)
+    last_dt = datetime.datetime.fromtimestamp(last).strftime("%d.%m.%Y %H:%M")
+    await msg.answer(f"🏦 Баланс в банке: {balance} коинов\nПоследнее начисление: {last_dt}\n"
+                     f"Чтобы положить коины: банк пополнить 123\nЧтобы снять: банк снять 123")
 
-# Пример интеграции:
-def handle_message(user_id, text):
-    text = text.strip()
-    if text.startswith("голосовать "):
-        name = text[len("голосовать "):]
-        return vote(user_id, name)
-    elif text == "персонажи":
-        return show_characters()
-    elif text == "победитель":
-        return show_winner()
-    elif text == "новая неделя":
-        return new_week()
-    else:
-        return "Неизвестная команда. Доступные команды: персонажи, голосовать [имя], победитель, новая неделя."
+@dp.message(lambda m: m.text and m.text.lower().startswith("банк пополнить"))
+async def bank_deposit(msg: types.Message):
+    parts = msg.text.strip().split()
+    if len(parts) < 3 or not parts[2].isdigit():
+        await msg.answer("Формат: банк пополнить 123 (где 123 — сумма перевода)")
+        return
+    amount = int(parts[2])
+    if amount <= 0:
+        await msg.answer("Сумма должна быть положительной.")
+        return
+    ok, txt = deposit(msg.from_user.id, amount)
+    await msg.answer(txt)
 
-# Для теста из консоли:
-if __name__ == "__main__":
-    print("Бот запущен. Вводи команды (пример: персонажи, голосовать Микаса Аккерман, победитель, новая неделя)")
-    while True:
-        try:
-            user_id = input("Введи свой user_id (число или имя): ")
-            msg = input("Введи команду: ")
-            print(handle_message(user_id, msg))
-        except KeyboardInterrupt:
-            print("\nВыход.")
-            break
+@dp.message(lambda m: m.text and m.text.lower().startswith("банк снять"))
+async def bank_withdraw(msg: types.Message):
+    parts = msg.text.strip().split()
+    if len(parts) < 3 or not parts[2].isdigit():
+        await msg.answer("Формат: банк снять 123 (где 123 — сумма снятия)")
+        return
+    amount = int(parts[2])
+    if amount <= 0:
+        await msg.answer("Сумма должна быть положительной.")
+        return
+    ok, txt = withdraw(msg.from_user.id, amount)
+    await msg.answer(txt)
 
 
 # АНТИФЛУД — ОСТАВЛЯЕМ ТОЛЬКО ЭТОТ ГЛОБАЛЬНЫЙ ХЕНДЛЕР!
