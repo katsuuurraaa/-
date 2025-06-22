@@ -23,16 +23,17 @@ from aiogram import types
 
 import random
 from collections import defaultdict
-
+from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery, Message
 from aiogram.fsm.context import FSMContext
-
 API_TOKEN = "7750083612:AAG2BGjYAHPtY4bkSZetxlJ4fmDa-6jEqKA"
-
-bot = Bot(token=API_TOKEN)
+bot = Bot(token="7750083612:AAG2BGjYAHPtY4bkSZetxlJ4fmDa-6jEqKA")
+dp = Dispatcher()
 
 OPENWEATHER_API_KEY = "37c1fe288c1a5bb876a736948dc4ce29"  # Вставь свой ключ от openweathermap.org
+
 
 DB_FILE = "db.json"
 
@@ -323,6 +324,7 @@ async def get_salary(msg: types.Message):
 
 @dp.message(lambda m: m.text and m.text.lower() == "профиль")
 async def profile(msg: Message):
+    user_id = msg.from_user.id
     user = get_user(msg.from_user.id)
     user["level"] = calc_level(user.get("messages", 0))
     nik = user.get("nick") or msg.from_user.first_name  
@@ -348,6 +350,7 @@ async def profile(msg: Message):
     text = (
         f"👤 <b>Профиль</b>\n"
         f"Ник: <b>{nik}</b>\n"
+        f"ID: <code>{user_id}</code>\n"
         f"Парадизкоины: <b>{user['coins']}</b>\n"
         f"Парадиз мана: <b>{user['mana']}</b>\n"
         f"Уровень: <b>{user['level']}</b>\n"
@@ -1000,221 +1003,170 @@ async def shop_handler(msg: types.Message, state: FSMContext):
 
 
 
-class MafiaStates(StatesGroup):
-    wait_for_players = State()
-    night = State()
-    day = State()
-    finished = State()
+import logging
+import sys
 
-# --- Game Data ---
-ROLE_LIST = [
-    "Мафия", "Дон", "Комиссар", "Доктор", "Мирный", "Мирный", "Мирный"
-]
+from telegram.ext import Updater, CommandHandler
+from host import Host
+from game import GameStatus
+from player import Player, roles
 
-game_data = {
-    "players": [],
-    "roles": {},
-    "alive": [],
-    "state": "idle",  # idle, night, day, voting
-    "votes": {},
-    "mafia_targets": [],
-    "current_chat": 0
+
+class Player(object):
+    """player"""
+    def __init__(self, user, game_master=False):
+        self.identity = user.id
+        self.name = (user.first_name +' '+ user.last_name).encode('utf-8')
+        if len(self.name) == 0:
+            self.name = (user.username).encode('utf-8')
+        self.role = None
+        if game_master:
+            self.role = '☝🏽️ Ведущий'
+
+    def __eq__(self, other):
+        return self.identity == other.id
+
+roles = {
+    'mafia' : '🔫 Мафия',
+    'godfather' : '💂 Крестный отец',
+    'civilian' : '👦 Обыватель',
+    'detective' : '👮 Детектив',
+    'doctor' : '🚑 Доктор',
+    'prostitute' : '💃 Красотка',
+    'killer' : '🔪 Маньяк'
 }
 
-def reset_game():
-    game_data["players"] = []
-    game_data["roles"] = {}
-    game_data["alive"] = []
-    game_data["state"] = "idle"
-    game_data["votes"] = {}
-    game_data["mafia_targets"] = []
-    game_data["current_chat"] = 0
+if len(sys.argv) > 1:
+    token = sys.argv[1]
+else:
+    token = "7750083612:AAG2BGjYAHPtY4bkSZetxlJ4fmDa-6jEqKA"
 
-def get_player_name(context, pid):
-    try:
-        user = context.bot.get_chat(pid)
-        return user.full_name
-    except Exception:
-        return str(pid)
+logging.basicConfig(filename='bot.log',level=logging.INFO)
 
-def check_win():
-    mafia_left = [pid for pid in game_data["alive"] if game_data["roles"].get(pid) in ["Мафия", "Дон"]]
-    peaceful_left = [pid for pid in game_data["alive"] if game_data["roles"].get(pid) not in ["Мафия", "Дон"]]
-    if not mafia_left:
-        return "Мирные победили! Мафия устранена."
-    elif len(mafia_left) >= len(peaceful_left):
-        return "Мафия победила! Мирные проиграли."
-    return None
+logger = logging.getLogger('mafiapartygamebot')
 
-def get_alive_keyboard(exclude=None):
-    exclude = exclude or []
-    buttons = []
-    for pid in game_data["alive"]:
-        if pid in exclude:
-            continue
-        buttons.append([InlineKeyboardButton(str(pid), callback_data=f"vote_{pid}")])
-    return InlineKeyboardMarkup(buttons)
-from telegram.ext import ContextTypes
-from telegram import Update
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip().lower()
-    user = update.effective_user
+logger.setLevel(logging.INFO)
 
-    # СТАРТ
-    if text == "мафия":
-        reset_game()
-        game_data["players"].append(user.id)
-        game_data["current_chat"] = update.message.chat_id
-        game_data["state"] = "gather"
-        await update.message.reply_text("Игра Мафия! Пиши 'присоединиться' чтобы играть. Для старта напиши 'начать'.")
+logger.info('bot started')
 
-    elif text == "присоединиться" and game_data["state"] == "gather":
-        if user.id in game_data["players"]:
-            await update.message.reply_text("Ты уже в игре!")
-            return
-        game_data["players"].append(user.id)
-        await update.message.reply_text(f"{user.full_name} присоединился! Всего игроков: {len(game_data['players'])}")
+host = Host()
 
-    elif text == "начать" and game_data["state"] == "gather":
-        if len(game_data["players"]) < 4:
-            await update.message.reply_text("Минимум 4 игрока для старта!")
-            return
-        roles = ROLE_LIST[:len(game_data["players"])]
-        random.shuffle(roles)
-        game_data["roles"] = {pid: role for pid, role in zip(game_data["players"], roles)}
-        game_data["alive"] = game_data["players"][:]
-        game_data["state"] = "night"
-        # Рассылка ролей
-        for pid, role in game_data["roles"].items():
-            try:
-                await context.bot.send_message(pid, f"Ваша роль: {role}")
-            except Exception:
-                pass
-        await update.message.reply_text("Роли розданы! Наступает ночь. Мафия, выберите жертву.")
-        await send_mafia_keyboard(context)
-
-    elif text == "статус":
-        txt = "Живые игроки:\n"
-        for pid in game_data["alive"]:
-            try:
-                user = await context.bot.get_chat(pid)
-                txt += f"{user.full_name} ({pid})\n"
-            except Exception:
-                txt += f"{pid}\n"
-        await update.message.reply_text(txt)
-
-    elif text == "сброс":
-        reset_game()
-        await update.message.reply_text("Игра сброшена.")
-
-async def send_mafia_keyboard(context):
-    mafia_players = [pid for pid in game_data["alive"] if game_data["roles"].get(pid) in ["Мафия", "Дон"]]
-    for pid in mafia_players:
-        try:
-            kb = get_alive_keyboard(exclude=[pid])
-            await context.bot.send_message(pid, "Выберите жертву (только Мафия/Дон):", reply_markup=kb)
-        except Exception:
-            pass
-
-async def mafia_night_vote_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user = query.from_user
-    if game_data["state"] != "night":
-        await query.edit_message_text("Сейчас не ночь или уже поздно выбирать.")
-        return
-    # Только мафия может голосовать ночью
-    if game_data["roles"].get(user.id) not in ["Мафия", "Дон"]:
-        await query.edit_message_text("Только Мафия/Дон голосуют ночью.")
-        return
-    target_id = int(query.data.split("_")[1])
-    # Каждый мафиози может выбрать только один раз, перезаписываем
-    for i, (pid, _) in enumerate(game_data.get("mafia_targets", [])):
-        if pid == user.id:
-            game_data["mafia_targets"][i] = (user.id, target_id)
-            break
+def new(bot, update):
+    """start new game"""
+    game = host.get_game(update.message.chat_id)
+    if game and game.state == GameStatus.waiting:
+        bot.sendMessage(
+            update.message.chat_id,
+            'Мы уже ожидаем игроков! \r\n{} {}'
+            .format(game.game_master.name, game.game_master.role))
+    elif game and game.state == GameStatus.started:
+        bot.sendMessage(
+            update.message.chat_id,
+            'А мы уже играем 😁 Чтобы завершить текущую игру, воспользуйтесь командой /cancel')
     else:
-        game_data.setdefault("mafia_targets", []).append((user.id, target_id))
-    await query.edit_message_text(f"Вы выбрали жертву: {target_id}")
-    # Если все мафиози выбрали
-    mafia_players = [pid for pid in game_data["alive"] if game_data["roles"].get(pid) in ["Мафия", "Дон"]]
-    if len({x[0] for x in game_data["mafia_targets"]}) == len(mafia_players):
-        # Считаем, кто выбрался больше всего раз
-        targets = [x[1] for x in game_data["mafia_targets"]]
-        victim = max(set(targets), key=targets.count)
-        if victim in game_data["alive"]:
-            game_data["alive"].remove(victim)
-            try:
-                user = await context.bot.get_chat(victim)
-                name = user.full_name
-            except Exception:
-                name = str(victim)
-            await context.bot.send_message(game_data["current_chat"], f"Ночью был убит: {name}")
-        game_data["mafia_targets"] = []
-        # Проверка победы
-        result = check_win()
-        if result:
-            await context.bot.send_message(game_data["current_chat"], f"{result}\nИгра окончена.")
-            reset_game()
-            return
-        game_data["state"] = "day"
-        await context.bot.send_message(game_data["current_chat"], "Наступает день! Голосуйте, кто подозрительный.")
-        await send_vote_keyboard(context)
+        game = host.create_game(update.message.chat_id, update.message.from_user)
+        game_master = game.game_master
+        bot.sendMessage(
+            update.message.chat_id,
+            'Начинаем новую игру, присоединяйся быстрее! \r\n{} {}'
+            .format(game_master.name, game_master.role))
 
-def get_vote_keyboard():
-    buttons = []
-    for pid in game_data["alive"]:
-        buttons.append([InlineKeyboardButton(str(pid), callback_data=f"dayvote_{pid}")])
-    return InlineKeyboardMarkup(buttons)
+def join(bot, update):
+    """join game"""
+    game = host.get_game(update.message.chat_id)
 
-async def send_vote_keyboard(context):
-    chat_id = game_data["current_chat"]
-    kb = get_vote_keyboard()
-    await context.bot.send_message(chat_id, "Дневное голосование! Кого выгоняем?", reply_markup=kb)
-    game_data["votes"] = {}
-
-async def day_vote_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user = query.from_user
-    if game_data["state"] != "day":
-        await query.edit_message_text("Сейчас не время голосования.")
-        return
-    target_id = int(query.data.split("_")[1])
-    game_data["votes"][user.id] = target_id
-    await query.edit_message_text(f"Ваш голос за {target_id} принят!")
-    # Если все живые проголосовали
-    if len(game_data["votes"]) == len(game_data["alive"]):
-        values = list(game_data["votes"].values())
-        voted_out = max(set(values), key=values.count)
-        if list(values).count(voted_out) == 1 and values.count(values[0]) == len(values):
-            await context.bot.send_message(game_data["current_chat"], "Ничья, никто не выбыл.")
+    if game is None:
+        bot.sendMessage(
+            update.message.chat_id,
+            'Для начала создайте новую игру при помощи команды /new')
+    else:
+        if game.game_master.identity == update.message.from_user.id:
+            bot.sendMessage(
+                update.message.chat_id,
+                'Ведущий играет роль ведущего...')
         else:
-            if voted_out in game_data["alive"]:
-                game_data["alive"].remove(voted_out)
-                try:
-                    user = await context.bot.get_chat(voted_out)
-                    name = user.full_name
-                except Exception:
-                    name = str(voted_out)
-                await context.bot.send_message(game_data["current_chat"], f"{name} был изгнан голосованием!")
-        # Проверка победы
-        result = check_win()
-        if result:
-            await context.bot.send_message(game_data["current_chat"], f"{result}\nИгра окончена.")
-            reset_game()
-            return
-        # Следующая ночь
-        game_data["state"] = "night"
-        await context.bot.send_message(game_data["current_chat"], "Наступает ночь!")
-        await send_mafia_keyboard(context)
+            player = game.add_player(update.message.from_user)
+            if player:
+                bot.sendMessage(
+                    update.message.chat_id,
+                    'К игре присоединился {}'.format(player.name))
 
-def main():
-    app = Application.builder().token(TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(CallbackQueryHandler(mafia_night_vote_callback, pattern="^vote_"))
-    app.add_handler(CallbackQueryHandler(day_vote_callback, pattern="^dayvote_"))
-    print("Бот запущен!")
+def play(bot, update):
+    """play new game"""
+    game = host.get_game(update.message.chat_id)
+
+    if not game:
+        bot.sendMessage(
+            update.message.chat_id,
+            'Сначала нужно создать игру при помощи команды /new')
+
+    elif game and game.state == GameStatus.waiting:
+        if game.game_master.identity != update.message.from_user.id:
+            bot.sendMessage(
+                update.message.chat_id,
+                'Только ведущий может начать игру. \r\n{} {}'
+                .format(game.game_master.name, game.game_master.role))
+        else:
+            game.start()
+            game_master = game.game_master
+
+            if len(game.players) == 0:
+                bot.sendMessage(update.message.chat_id, 'Для игры в мафии нужны игроки 😊')
+                return
+
+            players = ['Роли игроков: \r\n']
+            for player in game.players:
+                players.append('{} {}'.format(player.role, player.name))
+                bot.sendMessage(player.identity, '❗️ Твоя роль {}'.format(player.role))
+
+            bot.sendMessage(game_master.identity, '\r\n'.join(players))
+
+            bot.sendMessage(
+                update.message.chat_id,
+                'Город засыпает 💤 \r\n{} {}'.format(game_master.name, game_master.role))
+
+    elif game and game.state == GameStatus.started:
+        bot.sendMessage(
+            update.message.chat_id,
+            'А мы уже играем 😁 Чтобы завершить текущую игру, воспользуйтесь командой /cancel')
+
+def cancel(bot, update):
+    """cancel game"""
+    game = host.get_game(update.message.chat_id)
+
+    if game:
+        game_master = game.game_master
+        if game_master.identity != update.message.from_user.id:
+            bot.sendMessage(
+                update.message.chat_id,
+                'Только ведущий может остановить игру. \r\n{} {}'
+                .format(game_master.name, game_master.role))
+        else:
+            host.delete_game(update.message.chat_id)
+            bot.sendMessage(update.message.chat_id, 'Игра остановлена 😐')
+    else:
+        bot.sendMessage(update.message.chat_id, 'Игра не найдена 😳')
+
+def help(bot, update):
+    """print help"""
+    bot.sendMessage(update.message.chat_id,
+                    '/new - создание новой игры \r\n'+
+                    '/join - присоединиться к игре \r\n'+
+                    '/play - город зассыпает... \r\n'+
+                    '/cancel - закончить игру')
+
+from queue import Queue
+updater = Updater(token, Queue())
+
+from telegram.ext import Application, CommandHandler
+
+application = Application.builder().token(token).build()
+
+application.add_handler(CommandHandler('new', new))
+application.add_handler(CommandHandler('join', join))
+application.add_handler(CommandHandler('play', play))
+application.add_handler(CommandHandler('cancel', cancel))
+application.add_handler(CommandHandler('help', help))
 
 
 @dp.message(lambda m: m.text and m.text.lower() == "выдать коины")
@@ -1393,52 +1345,6 @@ from aiogram import Bot
 from aiogram.types import Message
 
 # Функции is_admin, is_moderator, get_user, update_user должны быть определены выше!
-
-# Исправленный перевод коинов
-@dp.message(lambda m: m.text and m.text.lower().startswith("перевести "))
-async def transfer_coins(msg: Message):
-    parts = msg.text.split()
-    if len(parts) < 3:
-        await msg.answer("Использование: перевести @user сумма")
-        return
-    to_name = parts[1]
-    try:
-        amount = int(parts[2])
-    except ValueError:
-        await msg.answer("Сумма должна быть числом.")
-        return
-    if amount <= 0:
-        await msg.answer("Сумма должна быть положительной.")
-        return
-    db = load_db()
-    to_id = None
-    to_search = to_name.replace("@", "").lower()
-    for uid, data in db.items():
-        if not isinstance(data, dict):
-            continue
-        if (data.get("nick", "").lower() == to_search or data.get("username", "").lower() == to_search):
-            to_id = int(uid)
-            break
-    if not to_id:
-        await msg.answer("Пользователь не найден.")
-        return
-    user = get_user(msg.from_user.id)
-    if user["coins"] < amount:
-        await msg.answer("Недостаточно средств.")
-        return
-    to_user = get_user(to_id)
-    user["coins"] -= amount
-    to_user["coins"] += amount
-    update_user(msg.from_user.id, user)
-    update_user(to_id, to_user)
-    await msg.answer(f"Ты перевёл {amount} коинов пользователю {to_name}!")
-    try:
-        await msg.bot.send_message(
-            to_id,
-            f"Вам перевели {amount} коинов от пользователя {user.get('nick') or '@'+user.get('username', str(msg.from_user.id))}!"
-        )
-    except Exception:
-        pass
 
 # Исправленный блок предложения брака
 pending_marriages = {}  # user_id: partner_id
@@ -2016,6 +1922,70 @@ async def nft_shop_buy(msg: Message, state: FSMContext):
         return
 
     await msg.answer("Для покупки: нфт купить номер\nДля выхода: нфт выход")
+
+
+router = Router()
+
+# Пример простой "базы" балансов (замени на свою систему!)
+balances = {}
+
+def get_coins(user_id):
+    return balances.get(user_id, 0)
+
+def add_coins(user_id, amount):
+    balances[user_id] = get_coins(user_id) + amount
+
+def remove_coins(user_id, amount):
+    balances[user_id] = max(0, get_coins(user_id) - amount)
+
+# FSM для передачи монет
+class TransferStates(StatesGroup):
+    waiting_for_recipient = State()
+    waiting_for_amount = State()
+
+# Старт передачи
+@router.message(lambda m: m.text and m.text.lower().startswith("перевести"))
+async def transfer_start(msg: Message, state: FSMContext):
+    await msg.answer("Укажи ID пользователя, которому хочешь перевести монеты:")
+    await state.set_state(TransferStates.waiting_for_recipient)
+
+# Получаем ID получателя
+@router.message(TransferStates.waiting_for_recipient)
+async def transfer_get_recipient(msg: Message, state: FSMContext):
+    try:
+        recipient_id = int(msg.text.strip())
+        if recipient_id == msg.from_user.id:
+            await msg.answer("Нельзя переводить монеты самому себе.")
+            return
+        await state.update_data(recipient_id=recipient_id)
+        await msg.answer("Сколько монет перевести?")
+        await state.set_state(TransferStates.waiting_for_amount)
+    except Exception:
+        await msg.answer("Некорректный ID пользователя. Введи числовой ID!")
+
+# Получаем сумму и выполняем перевод
+@router.message(TransferStates.waiting_for_amount)
+async def transfer_get_amount(msg: Message, state: FSMContext):
+    try:
+        amount = int(msg.text.strip())
+        data = await state.get_data()
+        recipient_id = data["recipient_id"]
+        sender_id = msg.from_user.id
+
+        if amount <= 0:
+            await msg.answer("Сумма должна быть положительной!")
+            return
+        if get_coins(sender_id) < amount:
+            await msg.answer("У тебя недостаточно монет.")
+            return
+
+        remove_coins(sender_id, amount)
+        add_coins(recipient_id, amount)
+        await msg.answer(f"Успешно переведено {amount} монет пользователю {recipient_id}!")
+        await state.clear()
+    except Exception:
+        await msg.answer("Ошибка! Введи корректное число монет.")
+
 
 
 # АНТИФЛУД — ОСТАВЛЯЕМ ТОЛЬКО ЭТОТ ГЛОБАЛЬНЫЙ ХЕНДЛЕР!
