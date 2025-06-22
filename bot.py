@@ -2021,13 +2021,9 @@ async def set_adult(msg: Message):
 async def set_adult(msg: Message):
     user = get_user(msg.from_user.id)
     user["is_adult"] = True
-    update_user(msg.from_user.id, user)
+    update_user(msg.from_user.id, user)  # обязательно!
     await msg.answer("Доступ к 18+ товарам теперь открыт!")
 
-    if user.get("adult_items"):
-        text += "\n<b>🍷 18+ предметы:</b>\n"
-    for a in user["adult_items"]:
-        text += f"- {a}\n"
 
 # АНТИФЛУД — ОСТАВЛЯЕМ ТОЛЬКО ЭТОТ ГЛОБАЛЬНЫЙ ХЕНДЛЕР!
 @dp.message()
