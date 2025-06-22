@@ -93,7 +93,6 @@ def save_db(db):
 
 
 def get_user(user_id):
-
     db = load_db()
     user_id = str(user_id)
     week_now = datetime.now(UTC).isocalendar()[1]
@@ -126,8 +125,10 @@ def get_user(user_id):
             "username": "",
             "first_name": "",
             "partner": None,
+            "is_adult": False,   # <--- вот эта строка
         }
         save_db(db)
+
     user = db[user_id]
     # сброс недельной/месячной статистики
     if user.get("week_reset", week_now) != week_now:
@@ -931,8 +932,7 @@ adult_items = [
 
 
 @dp.message(ShopStates.buying)
-async def shop_buy(msg: Message, state: FSMContext):
-    # Команда выхода
+async def shop_categories(msg: Message, state: FSMContext):
     if msg.text.lower() == "выход":
         await msg.answer("Вы вышли из магазина.")
         await state.clear()
@@ -943,7 +943,15 @@ async def shop_buy(msg: Message, state: FSMContext):
         await msg.answer("Формат: номер цвет. Пример: 1 Черный\nИли напиши 'выход' для выхода из магазина.")
         return
 
-    
+@dp.message(lambda m: m.text and m.text.lower() == "18+")
+async def show_adult_shop(msg: Message):
+    text = "<b>18+ Магазин:</b>\n"
+    for idx, item in enumerate(adult_items, 1):
+        text += f"{idx}. {item['name']} — {item['price']} коинов\n"
+    text += "\nДля покупки: номер цвет (например: 1 коричневый)\nДля выхода: выход"
+    await msg.answer(text, parse_mode="HTML")
+
+
     number = int(parts[0])
     color = " ".join(parts[1:]).capitalize()
 
@@ -969,12 +977,6 @@ async def shop_buy(msg: Message, state: FSMContext):
         await msg.answer("Нет товара с таким номером.")
         return
 
-    # Проверка 18+
-    if item_type == "adult":
-        user = get_user(msg.from_user.id)
-        if not user.get("is_adult"):
-            await msg.answer("Этот товар только для пользователей 18+. Напиши 'я взрослый' для подтверждения возраста.")
-            return
 
     if color not in item["colors"]:
         await msg.answer(f"Нет такого цвета. Доступные: {', '.join(item['colors'])}")
@@ -2006,23 +2008,6 @@ async def nft_shop_buy(msg: Message, state: FSMContext):
     await msg.answer(f"Поздравляем! Ты купил NFT: {item['name']} за {price} коинов.")
     await state.clear()
 
-@dp.message(lambda m: m.text and "18+" in m.text)
-async def confirm_adult(msg: Message):
-    await msg.answer("Ты точно старше 18? Напиши 'Да' если так.")
-
-@dp.message(lambda m: m.text and m.text.lower() == "да")
-async def set_adult(msg: Message):
-    user = get_user(msg.from_user.id)
-    user["is_adult"] = True
-    update_user(msg.from_user.id, user)
-    await msg.answer("Доступ к 18+ магазинам теперь открыт!")
-
-@dp.message(lambda m: m.text and m.text.lower() == "я взрослый")
-async def set_adult(msg: Message):
-    user = get_user(msg.from_user.id)
-    user["is_adult"] = True
-    update_user(msg.from_user.id, user)  # обязательно!
-    await msg.answer("Доступ к 18+ товарам теперь открыт!")
 
 
 # АНТИФЛУД — ОСТАВЛЯЕМ ТОЛЬКО ЭТОТ ГЛОБАЛЬНЫЙ ХЕНДЛЕР!
