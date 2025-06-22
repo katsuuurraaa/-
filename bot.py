@@ -929,7 +929,7 @@ async def shop_buy(msg: Message, state: FSMContext):
 
     parts = msg.text.strip().split()
     if len(parts) < 2 or not parts[0].isdigit():
-        await msg.answer("Формат: <номер> <цвет>. Пример: 1 Черный\nИли напиши 'выход' для выхода из магазина.")
+        await msg.answer("Формат: номер цвет. Пример: 1 Черный\nИли напиши 'выход' для выхода из магазина.")
         return
 
     number = int(parts[0])
@@ -1860,6 +1860,84 @@ async def my_auctions(msg: types.Message):
     if not found:
         text += "Нет активных сделок."
     await msg.answer(text, parse_mode="HTML")
+
+
+
+import os
+import pickle
+from datetime import datetime, timedelta
+from market_items import market_extra_items
+
+MARKET_STATE_FILE = "market_state.pkl"
+
+def get_market_items():
+    if os.path.exists(MARKET_STATE_FILE):
+        with open(MARKET_STATE_FILE, "rb") as f:
+            state = pickle.load(f)
+        if datetime.now() < state["expires"]:
+            return state["items"]
+    # Сформировать новый рынок
+    all_items = []
+    phones_sample = random.sample(phones, 2)
+    cars_sample = random.sample(cars, 1)
+    laptops_sample = random.sample(laptops, 1)
+    # Скидка 25%
+    for it in phones_sample+cars_sample+laptops_sample:
+        item = it.copy()
+        item["price"] = int(item["price"] * 0.75)
+        all_items.append(item)
+    extra = random.sample(market_extra_items, min(2, len(market_extra_items)))
+    all_items.extend(extra)
+    state = {"items": all_items, "expires": datetime.now() + timedelta(hours=6)}
+    with open(MARKET_STATE_FILE, "wb") as f:
+        pickle.dump(state, f)
+    return all_items
+
+
+@dp.message(lambda m: m.text and m.text.lower() == "рынок")
+async def market_menu(msg: Message):
+    items = get_market_items()
+    text = "<b>🛒 Рынок (обновляется каждые 6 часов):</b>\n"
+    for i, item in enumerate(items, 1):
+        text += f"{i}. {item['name']} — {item['price']} коинов"
+        if "desc" in item:
+            text += f" ({item['desc']})"
+        text += "\n"
+    text += "\nДля покупки: рынок купить <номер>"
+    await msg.answer(text, parse_mode="HTML")
+
+@dp.message(lambda m: m.text and m.text.lower().startswith("рынок купить"))
+async def market_buy(msg: Message):
+    parts = msg.text.strip().split()
+    if len(parts) < 3 or not parts[2].isdigit():
+        await msg.answer("Формат: рынок купить <номер>")
+        return
+    idx = int(parts[2]) - 1
+    items = get_market_items()
+    if not (0 <= idx < len(items)):
+        await msg.answer("Нет такого товара.")
+        return
+    item = items[idx]
+    user = get_user(msg.from_user.id)
+    if user["coins"] < item["price"]:
+        await msg.answer("Недостаточно коинов.")
+        return
+    user["coins"] -= item["price"]
+    # Можно добавить выдачу уникальных предметов в инвентарь
+    if "desc" in item:
+        user.setdefault("inventory", {})
+        user["inventory"][item["name"]] = user["inventory"].get(item["name"], 0) + 1
+    else:
+        # Как в магазине: phone, car, notebook
+        if item in phones:
+            user["phone"] = item["name"]
+        elif item in cars:
+            user["car"] = item["name"]
+        elif item in laptops:
+            user["notebook"] = item["name"]
+    update_user(msg.from_user.id, user)
+    await msg.answer(f"Покупка успешна! Ты купил {item['name']}. Осталось: {user['coins']} коинов.")
+
 
 # АНТИФЛУД — ОСТАВЛЯЕМ ТОЛЬКО ЭТОТ ГЛОБАЛЬНЫЙ ХЕНДЛЕР!
 @dp.message()
